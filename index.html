@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>五寮尖羊奶 - 戰情配送系統 V5.2 雙模組版</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    
+    <!-- Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+    
+    <!-- Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+
+    <!-- SweetAlert2 -->
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        flavor: {
+                            original: '#4CAF50',
+                            sweet: '#EF4444',   
+                            choc: '#795548',     
+                            straw: '#9333ea',    
+                            sugar: '#F59E0B'     
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background-color: #f1f5f9; -webkit-tap-highlight-color: transparent; }
+        [v-cloak] { display: none; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        
+        .card-base {
+            aspect-ratio: 1 / 1; 
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .card-done { 
+            opacity: 0.2; 
+            transform: scale(0.9); 
+            filter: grayscale(100%);
+            background-color: #e2e8f0 !important;
+            border-color: transparent !important;
+        }
+
+        .card-defer { border: 2px solid #3b82f6; background-color: #eff6ff; }
+        .card-swap { border: 2px solid #a855f7; background-color: #faf5ff; } 
+        
+        .card-leave { 
+            opacity: 0.8; 
+            background-color: #ffedd5; 
+            border: 2px solid #f97316; 
+            position: relative;
+        }
+        .card-leave .order-name {
+            text-decoration: line-through;
+            text-decoration-color: #ea580c; 
+            color: #9a3412; 
+        }
+        .card-leave::after {
+            content: '停送';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) rotate(-15deg);
+            font-size: 2rem;
+            font-weight: 900;
+            color: rgba(249, 115, 22, 0.2);
+            pointer-events: none;
+        }
+
+        .badge-bounce { animation: bounce 1s infinite; }
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-25%); }
+        }
+
+        .fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
+        .fade-enter-from, .fade-leave-to { opacity: 0; }
+    </style>
+</head>
+<body class="h-screen overflow-hidden flex flex-col text-slate-800">
+
+<div id="app" v-cloak class="h-full flex flex-col relative">
+
+    <header class="bg-white shadow-md z-30 flex-none border-b border-slate-200">
+        <div class="px-3 py-2">
+            <div class="flex justify-between items-center mb-1">
+                <div class="flex items-center gap-3">
+                    <button @click="toggleSidebar" class="text-slate-700 p-2 active:bg-slate-100 rounded-full transition">
+                        <i class="fas fa-bars text-xl"></i>
+                    </button>
+                    <div>
+                        <h1 class="text-base font-bold text-slate-800 leading-tight">
+                            {{ currentYMD }} ( {{ weekDays[currentDayIndex] }} ) 
+                            <span v-if="currentModule==='A'" class="text-xs bg-emerald-100 text-emerald-700 px-1 rounded ml-1">晨間</span>
+                            <span v-else class="text-xs bg-blue-100 text-blue-700 px-1 rounded ml-1">家庭號</span>
+                        </h1>
+                        <div class="text-xs font-bold flex items-center gap-2 mt-0.5">
+                            <span class="text-red-500"><i class="fas fa-truck-loading"></i> 車上剩餘</span>
+                            <span class="bg-slate-800 text-white px-2 py-0.5 rounded-full text-[11px]">
+                                {{ remainingInventory.total }} {{ currentModule === 'A' ? '瓶' : '罐' }}
+                            </span>
+                            <span class="text-amber-500 ml-1"><i class="fas fa-sack-dollar"></i> 應收</span>
+                            <span class="bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full text-[11px]">
+                                ${{ totalReceivables }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="text-right">
+                    <div class="text-2xl font-black text-slate-200 leading-none relative">
+                        {{ progressPercent }}<span class="text-xs">%</span>
+                        <span class="absolute top-0 right-0 text-emerald-500 clip-text" :style="{clipPath: `inset(0 ${100-progressPercent}% 0 0)`}">
+                            {{ progressPercent }}<span class="text-xs">%</span>
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Inventory Badges -->
+            <div class="flex gap-1 overflow-x-auto no-scrollbar pb-1 mt-2">
+                <template v-if="currentModule === 'A'">
+                    <div v-for="(count, key) in remainingInventory.flavors" :key="key" 
+                         v-show="count > 0"
+                         class="px-2 py-1 rounded-md text-[10px] font-bold text-white whitespace-nowrap flex items-center gap-1 shadow-sm transition-all duration-300"
+                         :style="{ backgroundColor: getFlavorColor(key) }">
+                        <span>{{ getFlavorName(key) }}</span>
+                        <span class="bg-white text-slate-800 px-1.5 rounded-full shadow-inner">{{ count }}</span>
+                    </div>
+                </template>
+                <template v-else>
+                    <div v-show="remainingInventory.large > 0" class="px-2 py-1 rounded-md text-[10px] font-bold text-white whitespace-nowrap flex items-center gap-1 shadow-sm bg-red-500">
+                        <span>大羊奶</span>
+                        <span class="bg-white text-slate-800 px-1.5 rounded-full shadow-inner">{{ remainingInventory.large }}</span>
+                    </div>
+                    <div v-show="remainingInventory.medium > 0" class="px-2 py-1 rounded-md text-[10px] font-bold text-white whitespace-nowrap flex items-center gap-1 shadow-sm bg-blue-500">
+                        <span>中羊奶</span>
+                        <span class="bg-white text-slate-800 px-1.5 rounded-full shadow-inner">{{ remainingInventory.medium }}</span>
+                    </div>
+                </template>
+                
+                <div v-if="remainingInventory.total === 0" class="text-xs text-emerald-600 font-bold w-full text-center animate-pulse">
+                    <i class="fas fa-check-circle"></i> 全數配送完畢
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="flex-1 overflow-y-auto p-2 pb-24 bg-slate-100">
+        
+        <div v-if="isLoading" class="flex flex-col items-center justify-center pt-20 gap-3">
+            <i class="fas fa-circle-notch fa-spin text-emerald-500 text-3xl"></i>
+            <span class="text-slate-400 text-xs">衛星連線與模組資料載入中...</span>
+        </div>
+
+        <div v-else class="grid grid-cols-3 gap-2 content-start">
+            <div v-for="order in filteredOrders" :key="order.id"
+                 @click="quickDone(order)"
+                 class="card-base rounded-xl p-2 shadow-sm border border-slate-200 flex flex-col justify-center relative bg-white select-none active:scale-95"
+                 :class="[
+                    order.status === 'done' ? 'card-done' : '',
+                    order.status === 'defer' ? 'card-defer' : '',
+                    order.status === 'swap' ? 'card-swap' : '',
+                    order.status === 'leave' ? 'card-leave' : ''
+                 ]">
+                
+                <!-- === 模組 A 佈局 === -->
+                <template v-if="currentModule === 'A'">
+                    <button @click.stop="openExceptionModal(order)" 
+                            class="absolute top-1 left-1 z-10 bg-slate-100 hover:bg-slate-200 text-slate-400 text-[9px] font-mono px-1.5 py-0.5 rounded border border-slate-200">
+                        {{ order.id }}
+                    </button>
+                    <div class="absolute top-1 right-1 text-[10px] font-bold text-slate-400 truncate max-w-[50px]">
+                        {{ order.district }}
+                    </div>
+                    
+                    <div class="order-name text-sm font-black text-slate-800 leading-tight line-clamp-2 text-center px-0.5 w-full mt-2">
+                        {{ order.name }}
+                        <div v-if="order.isTemp" class="text-[8px] text-red-500">(臨)</div>
+                    </div>
+
+                    <div class="absolute bottom-1 left-1 flex flex-wrap gap-1">
+                        <template v-for="(qty, key) in order.flavors" :key="key">
+                            <div v-if="qty > 0" 
+                                 class="h-4 min-w-[16px] px-1 rounded flex items-center justify-center text-[9px] text-white font-bold shadow-sm"
+                                 :style="{ backgroundColor: getFlavorColor(key) }">
+                                {{ qty }}
+                            </div>
+                        </template>
+                    </div>
+                    
+                    <div class="absolute bottom-1 right-1 text-[9px] font-bold text-slate-400 bg-slate-50 px-1 rounded border border-slate-100">
+                        $30/瓶
+                    </div>
+                </template>
+
+                <!-- === 模組 B 佈局 === -->
+                <template v-else>
+                    <!-- 左上: 週期 -->
+                    <button @click.stop="openExceptionModal(order)" class="absolute top-1 left-1 z-10 bg-slate-100 hover:bg-slate-200 text-slate-500 text-[9px] font-bold px-1.5 py-0.5 rounded border border-slate-200">
+                        {{ order.cycle || '無' }}
+                    </button>
+                    <!-- 右上: 地區 -->
+                    <div class="absolute top-1 right-1 text-[10px] font-bold text-slate-400 truncate max-w-[50px]">
+                        {{ order.district }}
+                    </div>
+                    <!-- 中間: 姓名 -->
+                    <div class="order-name text-sm font-black text-slate-800 leading-tight line-clamp-2 text-center px-0.5 w-full mt-1">
+                        {{ order.name }}
+                        <div v-if="order.isTemp" class="text-[8px] text-red-500">(臨)</div>
+                    </div>
+                    <!-- 左下: 大羊奶單價 -->
+                    <div v-if="order.largeQty > 0" class="absolute bottom-1 left-1 text-[9px] font-bold text-red-500">
+                        ${{ order.largePrice }}
+                    </div>
+                    <!-- 右下: 中羊奶單價 -->
+                    <div v-if="order.mediumQty > 0" class="absolute bottom-1 right-1 text-[9px] font-bold text-blue-500">
+                        ${{ order.mediumPrice }}
+                    </div>
+                    <!-- 中下: 數量 (方塊) -->
+                    <div class="absolute bottom-1 left-1/2 -translate-x-1/2 flex gap-1">
+                        <div v-if="order.largeQty > 0" class="h-4 min-w-[16px] px-1 rounded bg-red-500 text-white flex items-center justify-center text-[10px] font-bold shadow-sm">
+                            {{ order.largeQty }}
+                        </div>
+                        <div v-if="order.mediumQty > 0" class="h-4 min-w-[16px] px-1 rounded bg-blue-500 text-white flex items-center justify-center text-[10px] font-bold shadow-sm">
+                            {{ order.mediumQty }}
+                        </div>
+                    </div>
+                </template>
+
+                <!-- 狀態覆蓋層 -->
+                <div v-if="order.status === 'defer'" class="absolute inset-0 flex items-center justify-center bg-white/60 backdrop-blur-[1px] rounded-xl pointer-events-none">
+                    <span class="text-blue-600 font-bold border-2 border-blue-600 px-2 py-1 rounded -rotate-12 text-xs">延後配送</span>
+                </div>
+                <div v-if="order.status === 'swap'" class="absolute inset-0 flex items-center justify-center bg-white/60 backdrop-blur-[1px] rounded-xl pointer-events-none">
+                    <span class="text-purple-600 font-bold border-2 border-purple-600 px-2 py-1 rounded -rotate-12 text-xs">已調貨</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="h-10"></div>
+    </main>
+
+    <div class="fixed bottom-0 left-0 right-0 z-40">
+        <div class="bg-white border-t border-slate-200 shadow-[0_-5px_15px_rgba(0,0,0,0.05)] px-4 py-3 flex justify-between items-center pb-safe">
+            <div class="text-xs font-bold text-slate-400 flex items-center gap-2">
+                <i class="fas fa-inbox"></i> 異常監控
+            </div>
+            <div class="flex gap-4">
+                <div v-if="stats.defer > 0" class="relative group cursor-pointer" @click="filterView('defer')">
+                    <div class="w-10 h-10 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center shadow-sm border border-blue-200 badge-bounce">
+                        <i class="fas fa-clock"></i>
+                    </div>
+                    <span class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-white">
+                        {{ stats.defer }}
+                    </span>
+                    <span class="text-[9px] text-blue-600 font-bold absolute -bottom-4 left-1/2 -translate-x-1/2">延後</span>
+                </div>
+
+                <div v-if="stats.swap > 0" class="relative group cursor-pointer" @click="filterView('swap')">
+                    <div class="w-10 h-10 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center shadow-sm border border-purple-200">
+                        <i class="fas fa-exchange-alt"></i>
+                    </div>
+                    <span class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-white">
+                        {{ stats.swap }}
+                    </span>
+                    <span class="text-[9px] text-purple-600 font-bold absolute -bottom-4 left-1/2 -translate-x-1/2">調貨</span>
+                </div>
+
+                <div v-if="viewFilter !== 'all'" @click="filterView('all')" class="w-10 h-10 rounded-full bg-slate-800 text-white flex items-center justify-center shadow-lg cursor-pointer">
+                    <i class="fas fa-undo"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 異常狀態 Modal -->
+    <transition name="fade">
+        <div v-if="exceptionModal.show" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" @click="closeExceptionModal"></div>
+            <div class="bg-white w-full max-w-xs rounded-2xl shadow-2xl relative p-4 flex flex-col gap-3">
+                <div class="text-center border-b border-slate-100 pb-2">
+                    <div class="text-xs text-slate-400 font-mono">{{ currentModule === 'A' ? exceptionModal.order.id : exceptionModal.order.cycle }}</div>
+                    <div class="text-lg font-bold text-slate-800">{{ exceptionModal.order.name }}</div>
+                </div>
+                <div class="grid grid-cols-3 gap-2">
+                    <button @click="setException('leave')" class="h-20 rounded-xl bg-orange-50 text-orange-600 border border-orange-200 active:bg-orange-100 flex flex-col items-center justify-center gap-1">
+                        <i class="fas fa-ban text-xl"></i>
+                        <span class="text-xs font-bold">請假/停送</span>
+                    </button>
+                    <button @click="setException('defer')" class="h-20 rounded-xl bg-blue-50 text-blue-600 border border-blue-200 active:bg-blue-100 flex flex-col items-center justify-center gap-1">
+                        <i class="fas fa-clock text-xl"></i>
+                        <span class="text-xs font-bold">延後配送</span>
+                    </button>
+                    <button @click="setException('swap')" class="h-20 rounded-xl bg-purple-50 text-purple-600 border border-purple-200 active:bg-purple-100 flex flex-col items-center justify-center gap-1">
+                        <i class="fas fa-exchange-alt text-xl"></i>
+                        <span class="text-xs font-bold">調貨/換奶</span>
+                    </button>
+                </div>
+                <button @click="setException('pending')" class="w-full py-3 rounded-xl border border-slate-200 text-slate-400 text-xs font-bold active:bg-slate-50">
+                    重置為未配送
+                </button>
+            </div>
+        </div>
+    </transition>
+
+    <!-- 臨時加單 Modal -->
+    <transition name="fade">
+        <div v-if="showTempOrderModal" class="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div class="absolute inset-0 bg-slate-900/90 backdrop-blur-md" @click="showTempOrderModal = false"></div>
+            <div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl relative p-5">
+                <h3 class="font-bold text-lg mb-4 text-slate-800">
+                    <i class="fas fa-plus-circle text-emerald-500"></i> 臨時加單 ({{ currentModule === 'A' ? '晨間' : '家庭號' }})
+                </h3>
+                
+                <div class="space-y-3">
+                    <div>
+                        <label class="text-xs font-bold text-slate-500">區域</label>
+                        <input v-model="tempForm.district" type="text" class="w-full p-2 border rounded bg-slate-50" placeholder="例如：三峽街上">
+                    </div>
+                    <div>
+                        <label class="text-xs font-bold text-slate-500">顧客姓名</label>
+                        <input v-model="tempForm.name" type="text" class="w-full p-2 border rounded bg-slate-50" placeholder="顧客稱呼">
+                    </div>
+                    
+                    <div v-if="currentModule === 'A'" class="grid grid-cols-5 gap-1 text-center">
+                        <div v-for="(name, key) in flavorNames" :key="key">
+                            <label class="text-[10px] block mb-1 font-bold">{{ name }}</label>
+                            <input v-model.number="tempForm.flavors[key]" type="tel" class="w-full p-1 border rounded text-center" placeholder="0">
+                        </div>
+                    </div>
+                    
+                    <div v-if="currentModule === 'B'" class="grid grid-cols-2 gap-3 text-center">
+                        <div class="bg-red-50 p-2 rounded border border-red-100">
+                            <label class="text-xs block mb-1 font-bold text-red-600">大羊奶數量</label>
+                            <input v-model.number="tempForm.largeQty" type="tel" class="w-full p-1 border rounded text-center" placeholder="0">
+                        </div>
+                        <div class="bg-blue-50 p-2 rounded border border-blue-100">
+                            <label class="text-xs block mb-1 font-bold text-blue-600">中羊奶數量</label>
+                            <input v-model.number="tempForm.mediumQty" type="tel" class="w-full p-1 border rounded text-center" placeholder="0">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-6 flex gap-2">
+                    <button @click="showTempOrderModal = false" class="flex-1 py-3 bg-slate-100 text-slate-500 rounded-xl font-bold">取消</button>
+                    <button @click="submitTempOrder" class="flex-1 py-3 bg-emerald-500 text-white rounded-xl font-bold shadow-lg shadow-emerald-200">確認新增</button>
+                </div>
+            </div>
+        </div>
+    </transition>
+
+    <!-- 側邊欄 -->
+    <div v-if="isSidebarOpen" class="fixed inset-0 z-50 flex">
+        <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" @click="toggleSidebar"></div>
+        <div class="relative bg-white w-4/5 max-w-xs h-full shadow-2xl flex flex-col transform transition-transform">
+            
+            <div class="p-5 bg-slate-800 text-white flex justify-between items-center">
+                <div>
+                    <h2 class="font-bold text-lg mb-1">V5.2 戰情中心</h2>
+                    <p class="text-xs text-slate-400">雙模組・快速結帳版</p>
+                </div>
+            </div>
+
+            <!-- 模組切換區 -->
+            <div class="p-4 border-b border-slate-100 bg-slate-50">
+                <h3 class="text-xs font-bold text-slate-500 mb-3 uppercase"><i class="fas fa-layer-group"></i> 配送模組切換</h3>
+                <div class="grid grid-cols-2 gap-2">
+                    <button @click="switchModule('A')" :class="currentModule === 'A' ? 'bg-emerald-500 text-white shadow-md' : 'bg-white text-slate-500 border border-slate-200'" class="py-2.5 rounded-lg font-bold text-sm transition-all">
+                        模組 A (晨間)
+                    </button>
+                    <button @click="switchModule('B')" :class="currentModule === 'B' ? 'bg-blue-500 text-white shadow-md' : 'bg-white text-slate-500 border border-slate-200'" class="py-2.5 rounded-lg font-bold text-sm transition-all">
+                        模組 B (家庭號)
+                    </button>
+                </div>
+            </div>
+
+            <div class="p-4 border-b border-slate-100 space-y-3">
+                <button @click="openTempOrder" class="w-full py-3 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-xl font-bold text-sm flex items-center justify-center gap-2">
+                    <i class="fas fa-plus-circle"></i> 臨時加單
+                </button>
+
+                <button @click="refreshDataFromSheet" 
+                        class="w-full py-2 bg-white border border-slate-300 rounded-lg text-slate-700 text-xs font-bold shadow-sm active:bg-slate-100 flex items-center justify-center gap-2">
+                    <i class="fas fa-sync-alt" :class="{'fa-spin': isRefreshing}"></i>
+                    同步最新 Google Sheet
+                </button>
+            </div>
+
+            <div class="p-4 border-b border-slate-100">
+                <h3 class="text-xs font-bold text-slate-500 mb-3 uppercase">配送日期</h3>
+                <div class="grid grid-cols-4 gap-2">
+                    <button v-for="(day, idx) in weekDays" :key="idx"
+                        @click="changeDay(idx)"
+                        :class="[currentDayIndex === idx ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-500']"
+                        class="py-2 rounded-lg text-sm font-bold transition-colors">
+                        {{ day }}
+                    </button>
+                </div>
+            </div>
+
+            <div class="p-4 border-b border-slate-100">
+                <button @click="resetCurrentDayData" class="w-full py-3 bg-red-50 text-red-600 border border-red-200 rounded-xl font-bold text-sm flex items-center justify-center gap-2">
+                    <i class="fas fa-trash-alt"></i> 重置{{ currentYMD }}狀態
+                </button>
+                <p class="text-[10px] text-slate-400 mt-2 text-center">注意：將清除當前模組本日的所有紀錄</p>
+            </div>
+
+            <div class="p-4 mt-auto">
+                <button @click="openTools" class="w-full py-3 bg-indigo-50 text-indigo-600 rounded-xl font-bold text-sm flex items-center justify-center gap-2 border border-indigo-100">
+                    <i class="fas fa-file-alt"></i> 查看日誌與匯出
+                </button>
+            </div>
+
+            <div class="p-3 bg-slate-100 text-[10px] text-slate-400 text-center font-mono">
+                Firebase Status: <span :class="firebaseConnected ? 'text-emerald-500' : 'text-red-500'">{{ firebaseConnected ? 'Connected' : 'Offline' }}</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 工具 Modal -->
+    <transition name="fade">
+        <div v-if="showToolsModal" class="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" @click="closeTools"></div>
+            <div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl relative flex flex-col max-h-[80vh]">
+                <div class="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl">
+                    <h3 class="font-bold text-slate-700">配送日誌</h3>
+                    <button @click="closeTools" class="w-8 h-8 rounded-full bg-white text-slate-400 shadow-sm flex items-center justify-center">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="flex-1 overflow-y-auto p-4 space-y-4">
+                    <textarea readonly class="w-full h-40 p-3 text-xs font-mono bg-slate-800 text-green-400 rounded-lg resize-none" :value="logText"></textarea>
+                    <button @click="copyCsvToClipboard" class="w-full py-3 bg-emerald-500 text-white rounded-lg font-bold text-sm shadow-md flex items-center justify-center gap-2">
+                        <span v-if="copyStatus === 'idle'"><i class="fas fa-copy"></i> 複製 CSV</span>
+                        <span v-else><i class="fas fa-check"></i> 已複製！</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </transition>
+
+</div>
+<script>
+    const { createApp, ref, computed, watch, onMounted } = Vue;
+
+    const firebaseConfig = {
+        apiKey: "AIzaSyB6D9vh6J2mdnjz2VXEVe99oi7oLF-irFo",
+        authDomain: "crm-ts-1225-001.firebaseapp.com",
+        databaseURL: "https://crm-ts-1225-001-default-rtdb.firebaseio.com",
+        projectId: "crm-ts-1225-001",
+        storageBucket: "crm-ts-1225-001.firebasestorage.app",
+        messagingSenderId: "925760221722",
+        appId: "1:925760221722:web:1aeda0b82f1f16b8dcd7a3"
+    };
+
+    let db;
+    try {
+        firebase.initializeApp(firebaseConfig);
+        db = firebase.database();
+    } catch (e) { console.error(e); }
+
+    const sheetUrlA = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQF9dZUNtfJjbPIf4_3wvrJoVIv7WxGrXKEit9V0ou25BA9L1lMCEjqykH41p3f2MZc2b02nMLJXnrw/pub?gid=216467280&single=true&output=csv';
+    const sheetUrlB = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQdNHbc1JRdEzfMo3wdKj8TWOKWosB4uPSvWHuL6MzJAh_jQ-erOrABrTUve6E6FzforoXjCOUAib6q/pub?gid=1931445606&single=true&output=csv';
+
+    createApp({
+        setup() {
+            const currentModule = ref('A'); // 'A' 晨間, 'B' 家庭號
+            
+            const isLoading = ref(true);
+            const isRefreshing = ref(false);
+            const firebaseConnected = ref(false);
+            const isSidebarOpen = ref(false);
+            const showToolsModal = ref(false);
+            const showTempOrderModal = ref(false);
+            const copyStatus = ref('idle');
+            const viewFilter = ref('all');
+
+            const exceptionModal = ref({ show: false, order: {} });
+
+            const weekDays = ['一', '二', '三', '四', '五', '六', '日'];
+            const currentDayIndex = ref(0); 
+            const currentYMD = ref(''); 
+
+            const rawRouteDataA = ref([]); // 模組 A 原始資料
+            const rawRouteDataB = ref([]); // 模組 B 原始資料
+            const tempOrders = ref([]); 
+            const statusMap = ref({}); 
+            const logs = ref([]); 
+
+            const tempForm = ref({ district: '', name: '', flavors: { original:0, sweet:0, choc:0, straw:0, sugar:0 }, largeQty: 0, mediumQty: 0, largePrice: 150, mediumPrice: 80 });
+
+            const flavorColors = { original: '#0aab65', sweet: '#EF4444', choc: '#795548', straw: '#9333ea', sugar: '#F59E0B' };
+            const flavorNames = { original: '原味', sweet: '微甜', choc: '巧克力', straw: '草莓', sugar: '麥芽' };
+
+            // 基礎資料處理 - 解析數字
+            const parseNum = (v) => v ? parseInt(v.toString().replace(/２/g,'2').trim()) || 0 : 0;
+
+            // 模組 A: 晨間配送解析
+            const parseCSV_A = (csvText) => {
+                const lines = csvText.trim().split('\n');
+                const result = [];
+                for (let i = 1; i < lines.length; i++) {
+                    const row = lines[i].split(',');
+                    if (row.length < 4) continue;
+                    const uniqueId = row[0].replace(/"/g,'').trim();
+                    const nyValue = row[1].replace(/"/g,'').trim().toLowerCase(); 
+                    if (!uniqueId || nyValue !== 'true') continue;
+
+                    const entry = {
+                        id: uniqueId, 
+                        district: row[2].replace(/"/g,'').trim(),
+                        name: row[3].replace(/"/g,'').trim(),
+                        weekly: [] 
+                    };
+                    for (let d = 0; d < 7; d++) {
+                        const s = 4 + (d * 5); 
+                        entry.weekly.push({
+                            original: parseNum(row[s]), sweet: parseNum(row[s+1]),
+                            choc: parseNum(row[s+2]), straw: parseNum(row[s+3]),
+                            sugar: parseNum(row[s+4]),
+                        });
+                    }
+                    result.push(entry);
+                }
+                rawRouteDataA.value = result;
+            };
+
+            // 模組 B: 家庭號配送解析
+            const parseCSV_B = (csvText) => {
+                const lines = csvText.trim().split('\n');
+                const result = [];
+                for (let i = 1; i < lines.length; i++) {
+                    const row = lines[i].split(',');
+                    if (row.length < 8) continue;
+                    const nyValue = row[1].replace(/"/g,'').trim().toLowerCase();
+                    if (nyValue !== 'true') continue;
+
+                    result.push({
+                        id: `FAM_${i}`, // 產生唯一識別碼
+                        cycle: row[0].replace(/"/g,'').trim(),
+                        district: row[2].replace(/"/g,'').trim(),
+                        name: row[3].replace(/"/g,'').trim(),
+                        largeQty: parseNum(row[4]),
+                        mediumQty: parseNum(row[5]),
+                        largePrice: parseNum(row[6]),
+                        mediumPrice: parseNum(row[7])
+                    });
+                }
+                rawRouteDataB.value = result;
+            };
+
+            // Firebase路徑依據模組切換
+            const getDbPath = () => `delivery_records_${currentModule.value}/${currentYMD.value}`;
+
+            const updateStatus = (order, status) => {
+                if (!db) return;
+                const path = getDbPath();
+                const oid = order.id;
+                const timestamp = Date.now();
+
+                db.ref(`${path}/orders/${oid}`).set({ status: status, timestamp: timestamp });
+
+                if (status !== 'pending') {
+                    db.ref(`${path}/logs`).push({
+                        timestamp: timestamp,
+                        customerId: oid,
+                        customerName: order.name,
+                        action: status
+                    });
+                }
+            };
+
+            const quickDone = (order) => {
+                const newStatus = order.status === 'done' ? 'pending' : 'done';
+                updateStatus(order, newStatus);
+            };
+
+            const openExceptionModal = (order) => { exceptionModal.value = { show: true, order: order }; };
+            const closeExceptionModal = () => { exceptionModal.value.show = false; };
+            const setException = (status) => { updateStatus(exceptionModal.value.order, status); closeExceptionModal(); };
+
+            const resetCurrentDayData = () => {
+                Swal.fire({
+                    title: '警告',
+                    text: `確定要清空 [${currentModule.value === 'A' ? '晨間' : '家庭號'}] 於 [${currentYMD.value}] 的所有紀錄嗎？`,
+                    icon: 'warning',
+                    showCancelButton: true,
+                    confirmButtonColor: '#d33',
+                    cancelButtonColor: '#3085d6',
+                    confirmButtonText: '確定清空',
+                    cancelButtonText: '取消'
+                }).then((result) => {
+                    if (result.isConfirmed && db) {
+                        db.ref(getDbPath()).remove()
+                            .then(() => {
+                                Swal.fire('已重置', '當日資料已成功清除', 'success');
+                                isSidebarOpen.value = false;
+                                statusMap.value = {};
+                                logs.value = [];
+                            })
+                            .catch(e => Swal.fire('錯誤', e.message, 'error'));
+                    }
+                });
+            };
+
+            const openTempOrder = () => {
+                tempForm.value = { district: '', name: '', flavors: { original:0, sweet:0, choc:0, straw:0, sugar:0 }, largeQty: 0, mediumQty: 0, largePrice: 150, mediumPrice: 80 };
+                showTempOrderModal.value = true;
+                isSidebarOpen.value = false;
+            };
+
+            const submitTempOrder = () => {
+                const id = `temp_${Date.now()}`;
+                const newOrder = {
+                    id: id,
+                    district: tempForm.value.district || '臨時區',
+                    name: tempForm.value.name || '臨時顧客',
+                    isTemp: true,
+                    module: currentModule.value
+                };
+                
+                if (currentModule.value === 'A') {
+                    newOrder.flavors = { ...tempForm.value.flavors };
+                    newOrder.weekly = Array(7).fill({ ...tempForm.value.flavors });
+                } else {
+                    newOrder.cycle = '臨時單';
+                    newOrder.largeQty = tempForm.value.largeQty;
+                    newOrder.mediumQty = tempForm.value.mediumQty;
+                    newOrder.largePrice = tempForm.value.largePrice;
+                    newOrder.mediumPrice = tempForm.value.mediumPrice;
+                }
+                
+                tempOrders.value.push(newOrder);
+                if(db) db.ref(`${getDbPath()}/logs`).push({ timestamp: Date.now(), customerId: id, customerName: newOrder.name, action: '新增臨時單' });
+                showTempOrderModal.value = false;
+                Swal.fire({ title: '已加入', icon: 'success', toast: true, position: 'top-end', showConfirmButton: false, timer: 1500 });
+            };
+
+            const switchModule = (mod) => {
+                currentModule.value = mod;
+                if(db) {
+                    db.ref(`delivery_records_A`).off();
+                    db.ref(`delivery_records_B`).off();
+                    fetchStatus();
+                }
+            };
+
+            const allOrders = computed(() => {
+                let baseList = [];
+                if (currentModule.value === 'A') {
+                    baseList = rawRouteDataA.value.map(item => {
+                        const flavors = item.weekly[currentDayIndex.value];
+                        if (!flavors) return null;
+                        const sum = Object.values(flavors).reduce((a,b)=>a+b,0);
+                        if(sum === 0) return null;
+                        return { ...item, flavors };
+                    }).filter(x => x);
+                } else {
+                    baseList = rawRouteDataB.value.map(item => ({...item}));
+                }
+
+                const temps = tempOrders.value.filter(t => t.module === currentModule.value).map(item => ({...item}));
+                
+                return [...baseList, ...temps].map(item => {
+                    const dbData = statusMap.value[item.id] || { status: 'pending' };
+                    return { ...item, status: dbData.status, timestamp: dbData.timestamp };
+                });
+            });
+
+            const filteredOrders = computed(() => {
+                let list = allOrders.value;
+                if (viewFilter.value === 'defer') list = list.filter(o => o.status === 'defer');
+                if (viewFilter.value === 'swap') list = list.filter(o => o.status === 'swap');
+                return list;
+            });
+
+            const progressPercent = computed(() => {
+                const total = allOrders.value.length;
+                if (total === 0) return 0;
+                const done = allOrders.value.filter(o => o.status === 'done').length;
+                return Math.round((done / total) * 100);
+            });
+
+            const remainingInventory = computed(() => {
+                if (currentModule.value === 'A') {
+                    const totals = { original: 0, sweet: 0, choc: 0, straw: 0, sugar: 0 };
+                    let grandTotal = 0;
+                    allOrders.value.forEach(order => {
+                        if (order.status === 'done' || order.status === 'leave') return;
+                        for (const key in totals) {
+                            totals[key] += (order.flavors[key] || 0);
+                            grandTotal += (order.flavors[key] || 0);
+                        }
+                    });
+                    return { flavors: totals, total: grandTotal };
+                } else {
+                    const totals = { large: 0, medium: 0 };
+                    let grandTotal = 0;
+                    allOrders.value.forEach(order => {
+                        if (order.status === 'done' || order.status === 'leave') return;
+                        totals.large += (order.largeQty || 0);
+                        totals.medium += (order.mediumQty || 0);
+                        grandTotal += (order.largeQty || 0) + (order.mediumQty || 0);
+                    });
+                    return { large: totals.large, medium: totals.medium, total: grandTotal };
+                }
+            });
+
+            // 應收帳款計算
+            const totalReceivables = computed(() => {
+                let total = 0;
+                allOrders.value.forEach(order => {
+                    if (order.status === 'leave') return; // 停送不計價
+                    if (currentModule.value === 'A') {
+                        const sum = Object.values(order.flavors).reduce((a,b)=>a+b,0);
+                        total += sum * 30; // 模組A預設30元/瓶
+                    } else {
+                        total += (order.largeQty * order.largePrice) + (order.mediumQty * order.mediumPrice);
+                    }
+                });
+                return total;
+            });
+
+            const stats = computed(() => ({
+                defer: allOrders.value.filter(o => o.status === 'defer').length,
+                swap: allOrders.value.filter(o => o.status === 'swap').length
+            }));
+
+            const logText = computed(() => {
+                if (logs.value.length === 0) return "尚無紀錄";
+                const actionMap = { done:'送達', leave:'請假', defer:'延後', swap:'調貨', pending:'重置' };
+                return logs.value.map(l => `[${formatTime(l.timestamp)}] ${l.customerName} : ${actionMap[l.action]||l.action}`).join('\n');
+            });
+
+            const initDate = () => {
+                const today = new Date();
+                const jsDay = today.getDay(); 
+                const targetIdx = jsDay === 0 ? 6 : jsDay - 1;
+                setDateByWeekIndex(targetIdx);
+            };
+
+            const setDateByWeekIndex = (idx) => {
+                const today = new Date();
+                const currentJsDay = today.getDay() === 0 ? 7 : today.getDay();
+                const targetJsDay = idx + 1;
+                const diff = targetJsDay - currentJsDay;
+                const targetDate = new Date(today);
+                targetDate.setDate(today.getDate() + diff);
+                
+                currentDayIndex.value = idx;
+                const y = targetDate.getFullYear();
+                const m = String(targetDate.getMonth() + 1).padStart(2, '0');
+                const d = String(targetDate.getDate()).padStart(2, '0');
+                currentYMD.value = `${y}-${m}-${d}`;
+            };
+
+            const fetchStatus = () => {
+                if (!db) return;
+                const path = getDbPath();
+                db.ref(`${path}/orders`).on('value', (snap) => statusMap.value = snap.val() || {});
+                db.ref(`${path}/logs`).on('value', (snap) => logs.value = snap.val() ? Object.values(snap.val()).sort((a,b)=>b.timestamp-a.timestamp) : []);
+                firebaseConnected.value = true;
+            };
+
+            const fetchRouteData = async (isManual = false) => {
+                if(!isManual) isLoading.value = true;
+                try {
+                    const [resA, resB] = await Promise.all([
+                        fetch(sheetUrlA).then(r=>r.text()),
+                        fetch(sheetUrlB).then(r=>r.text())
+                    ]);
+                    parseCSV_A(resA);
+                    parseCSV_B(resB);
+                    if(isManual) Swal.fire({ title: '同步完成', icon: 'success', toast: true, position: 'top-end', showConfirmButton: false, timer: 1500 });
+                } catch (e) {
+                    console.error(e);
+                    if(isManual) Swal.fire('錯誤', '資料同步失敗', 'error');
+                } finally {
+                    isLoading.value = false;
+                }
+            };
+
+            const refreshDataFromSheet = async () => {
+                isRefreshing.value = true;
+                isSidebarOpen.value = false;
+                await fetchRouteData(true);
+                isRefreshing.value = false;
+            };
+
+            const toggleSidebar = () => isSidebarOpen.value = !isSidebarOpen.value;
+            const openTools = () => { showToolsModal.value = true; isSidebarOpen.value = false; };
+            const closeTools = () => showToolsModal.value = false;
+            const changeDay = (idx) => { setDateByWeekIndex(idx); isSidebarOpen.value = false; };
+            const filterView = (type) => viewFilter.value = type;
+            const formatTime = (ts) => { if(!ts) return ''; const d=new Date(ts); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
+            const getFlavorColor = (k) => flavorColors[k];
+            const getFlavorName = (k) => flavorNames[k];
+            
+            const copyCsvToClipboard = () => {
+                let csv = "";
+                if (currentModule.value === 'A') {
+                    csv = "ID,區域,姓名,狀態,時間,原味,微甜,巧克力,草莓,麥芽\n";
+                    allOrders.value.forEach(o => {
+                        const s = o.status === 'pending' ? '未送' : (o.status==='done'?'送達':(o.status==='leave'?'請假':o.status));
+                        csv += `${o.id},${o.district},${o.name},${s},${o.timestamp?formatTime(o.timestamp):''},${o.flavors.original||0},${o.flavors.sweet||0},${o.flavors.choc||0},${o.flavors.straw||0},${o.flavors.sugar||0}\n`;
+                    });
+                } else {
+                    csv = "週期,區域,姓名,狀態,時間,大羊奶數量,中羊奶數量,大羊奶單價,中羊奶單價\n";
+                    allOrders.value.forEach(o => {
+                        const s = o.status === 'pending' ? '未送' : (o.status==='done'?'送達':(o.status==='leave'?'請假':o.status));
+                        csv += `${o.cycle},${o.district},${o.name},${s},${o.timestamp?formatTime(o.timestamp):''},${o.largeQty},${o.mediumQty},${o.largePrice},${o.mediumPrice}\n`;
+                    });
+                }
+                navigator.clipboard.writeText(csv).then(() => { copyStatus.value = 'copied'; setTimeout(()=>copyStatus.value='idle', 2000); });
+            };
+
+            watch(currentYMD, () => { if(db){ db.ref(`delivery_records_A`).off(); db.ref(`delivery_records_B`).off(); fetchStatus(); } });
+            onMounted(() => { initDate(); fetchRouteData(); fetchStatus(); });
+
+            return {
+                isLoading, isRefreshing, firebaseConnected, isSidebarOpen, showToolsModal, showTempOrderModal,
+                weekDays, currentDayIndex, currentYMD, filteredOrders, progressPercent, remainingInventory,
+                logs, logText, copyStatus, stats, viewFilter, exceptionModal, tempForm, flavorNames,
+                currentModule, totalReceivables,
+                toggleSidebar, openTools, closeTools, openExceptionModal, closeExceptionModal, setException,
+                openTempOrder, submitTempOrder, refreshDataFromSheet, copyCsvToClipboard, changeDay, quickDone, filterView,
+                getFlavorColor, getFlavorName, resetCurrentDayData, switchModule
+            };
+        }
+    }).mount('#app');
+</script>
+</body>
+</html>
